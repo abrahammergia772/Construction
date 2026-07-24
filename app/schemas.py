@@ -16,6 +16,7 @@ class PublicConfig(BaseModel):
 class OnboardingRequest(BaseModel):
     organization_name: str = Field(min_length=2, max_length=120)
     full_name: str = Field(min_length=2, max_length=120)
+    role: Role = Field(default="admin", description="Initial workspace role. Only the first workspace user can select admin; others must be invited.")
 
 
 class UserProfile(BaseModel):
