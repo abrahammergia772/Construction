@@ -91,10 +91,20 @@ class SupabaseRepository:
             "entity_name": entity_name, "severity": severity,
         })
 
-    def onboarding(self, user: dict[str, Any], organization_name: str, full_name: str) -> dict[str, Any]:
+    def onboarding(self, user: dict[str, Any], organization_name: str, full_name: str, role: str = "admin") -> dict[str, Any]:
         existing = self.profile(user["id"])
         if existing:
+            if role != existing.get("role"):
+                raise HTTPException(status_code=409, detail="Your account already exists with a different role. Contact your workspace admin.")
             return existing
+        # Only allow admin creation for the very first workspace user (no existing profiles in system)
+        # This prevents every new sign-up from becoming admin automatically.
+        profiles_check = self.client.table("profiles").select("id").execute()
+        existing_profiles = self._data(profiles_check)
+        if role == "admin" and existing_profiles:
+            raise HTTPException(status_code=403, detail="Admin role is reserved for the initial workspace creator. You have been assigned 'employee' by default.")
+        if role not in {"admin", "manager", "employee", "customer"}:
+            raise HTTPException(status_code=400, detail=f"Invalid role '{role}'. Allowed: admin, manager, employee, customer.")
         organization = self.insert("organizations", {"name": organization_name, "created_by": user["id"]})
         department_records = [
             {"organization_id": organization["id"], "name": name, "code": code, "color": color}
@@ -108,11 +118,12 @@ class SupabaseRepository:
         departments = self._data(self.client.table("departments").insert(department_records).execute())
         profile = self.insert("profiles", {
             "id": user["id"], "organization_id": organization["id"], "email": user["email"],
-            "full_name": full_name, "role": "admin", "department_id": departments[0]["id"],
+            "full_name": full_name, "role": role, "department_id": departments[0]["id"],
         })
+        job_title_map = {"admin": "Operations Administrator", "manager": "Operations Manager", "employee": "Team Member", "customer": "Client Contact"}
         self.insert("employees", {
             "organization_id": organization["id"], "profile_id": user["id"], "department_id": departments[0]["id"],
-            "full_name": full_name, "email": user["email"], "job_title": "Operations Administrator", "status": "Active",
+            "full_name": full_name, "email": user["email"], "job_title": job_title_map.get(role, "Team Member"), "status": "Active",
         })
         self.log({"profile": profile}, "created workspace", "Organization", organization_name, "Low")
         return profile
