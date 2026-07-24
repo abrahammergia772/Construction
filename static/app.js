@@ -53,20 +53,81 @@ async function signOut() { if (state.supabase) await state.supabase.auth.signOut
 
 async function loadDashboard(showToast = false) { const data = await api('/api/dashboard'); state.dashboard = data; renderDashboard(data); if (showToast) toast('Workspace refreshed.'); }
 function roleSetup(profile) {
-  const isManager = managerRoles.has(profile.role); const isStaff = profile.role !== 'customer';
-  $$('.manager-only').forEach(node => node.classList.toggle('hidden', !isManager));
-  $$('.staff-only').forEach(node => node.classList.toggle('hidden', !isStaff));
-  $('#userName').textContent = profile.full_name; $('#userRole').textContent = profile.role; $('#userInitials').textContent = initials(profile.full_name);
-  $('#dashboardRole').textContent = `${profile.role.toUpperCase()} PORTAL`;
+  const isAdmin = profile.role === 'admin';
+  const isManager = profile.role === 'manager';
+  const isEmployee = profile.role === 'employee';
+  const isCustomer = profile.role === 'customer';
+  const isStaff = profile.role !== 'customer';
+
+  // Strict DOM removal (not just CSS hidden) for admin-only sections
+  $$('.manager-only').forEach(node => {
+    if (isAdmin || isManager) {
+      node.classList.remove('hidden');
+      node.style.display = '';
+    } else {
+      node.classList.add('hidden');
+      node.style.display = 'none';
+      // Fully remove interactive buttons from DOM for non-managers
+      if (!isAdmin && !isManager) {
+        node.querySelectorAll('button, a').forEach(btn => btn.remove());
+        node.innerHTML = '<span class="restricted-label">Restricted to managers and admins</span>';
+      }
+    }
+  });
+
+  $$('.staff-only').forEach(node => {
+    if (isStaff) {
+      node.classList.remove('hidden');
+      node.style.display = '';
+    } else {
+      node.classList.add('hidden');
+      node.style.display = 'none';
+    }
+  });
+
+  // Admin-only strict removal
+  $$('.admin-only').forEach(node => {
+    if (!isAdmin && !isManager) {
+      node.classList.add('hidden');
+      node.style.display = 'none';
+    } else {
+      node.classList.remove('hidden');
+      node.style.display = '';
+    }
+  });
+
+  const adminOnlySections = document.querySelectorAll('#audit');
+  adminOnlySections.forEach(node => {
+    if (!isAdmin && !isManager) {
+      node.classList.add('hidden');
+      node.style.display = 'none';
+    }
+  });
+
+  $('#userName').textContent = profile.full_name;
+  $('#userRole').textContent = profile.role;
+  $('#userInitials').textContent = initials(profile.full_name);
+
+  // Different UI titles per role
+  const roleLabels = {
+    admin: 'ADMIN COMMAND CENTER',
+    manager: 'MANAGER DASHBOARD',
+    employee: 'EMPLOYEE WORKSPACE',
+    customer: 'CUSTOMER PORTAL'
+  };
+  $('#dashboardRole').textContent = (roleLabels[profile.role] || profile.role.toUpperCase() + ' PORTAL');
+
+  const subtitles = {
+    admin: 'Full organization control, audit, AI settings, risk assessment, and team management.',
+    manager: 'Department oversight, team actions, customer relationships, and delivery tracking.',
+    employee: 'Your assigned tasks, open actions, project updates, and complaints.',
+    customer: 'Only your assigned projects, tasks, and complaint records.'
+  };
+  $('#dashboardSubtitle').textContent = subtitles[profile.role] || 'Your role-aware workspace.';
+
   $('#dashboardGreeting').textContent = `Welcome, ${profile.full_name.split(' ')[0]}`;
-  $('#dashboardSubtitle').textContent = profile.role === 'customer'
-    ? 'Your client portal: only your assigned projects, tasks, and complaints.'
-    : profile.role === 'employee'
-    ? 'Your workspace: assigned tasks, open actions, and accessible project data.'
-    : profile.role === 'manager'
-    ? 'Management view: departments, team actions, customer relationships, and project delivery.'
-    : 'Admin command center: full organization control, audit, AI, and risk assessment.';
-  // Apply role-based color theme
+
+  // Role-based color theme
   document.body.className = document.body.className.replace(/role-[a-z]+/g, '').trim();
   document.body.classList.add(`role-${profile.role}`);
   $('#appShell').classList.add(`role-${profile.role}`);
@@ -98,11 +159,36 @@ async function finishTask(id, button) { button.disabled = true; try { await api(
 function renderComplaints(data) { const projects = new Map(data.projects.map(item => [item.id, item.name])); $('#complaintTable').innerHTML = data.complaints.length ? data.complaints.map(item => `<tr><td>${severityBadge(item.priority)}</td><td>${escapeHTML(item.category)}</td><td class="issue-cell">${escapeHTML(item.description)}</td><td>${escapeHTML(projects.get(item.project_id) || 'General')}</td><td>${statusBadge(item.status)}</td><td class="cell-muted">${formatTimestamp(item.created_at)}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-state">No complaints have been logged.</td></tr>'; }
 function renderDocuments(data) { $('#documentList').innerHTML = data.documents?.length ? data.documents.map(item => `<article class="document-card"><span>▤</span><strong title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</strong><small>${escapeHTML(item.document_type)} · ${formatTimestamp(item.created_at)}</small><a href="${escapeHTML(item.url)}" target="_blank" rel="noopener noreferrer">Open approved link →</a></article>`).join('') : '<p class="empty-state">No documents are registered. Add approved HTTPS document links here; configure Supabase Storage for managed file uploads.</p>'; }
 function renderAudit(data) { $('#auditTable').innerHTML = data.audit_events.length ? data.audit_events.map(item => `<tr><td>${severityBadge(item.severity)}</td><td class="project-name">${escapeHTML(item.actor_name)}</td><td>${escapeHTML(item.action)}</td><td>${escapeHTML(item.entity_type)}<span class="cell-muted">${escapeHTML(item.entity_name)}</span></td><td class="cell-muted">${formatTimestamp(item.created_at)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-state">Audit activity is available to Admin and Manager roles.</td></tr>'; }
+
+async function loadAIDev() {
+  if (!state.dashboard || (state.dashboard.profile.role !== 'admin' && state.dashboard.profile.role !== 'manager')) return;
+  try {
+    const [config, usage, status] = await Promise.all([
+      api('/api/ai/config'),
+      api('/api/ai/usage'),
+      api('/api/system/status'),
+    ]);
+    $('#aiConfigPanel').innerHTML = `<article class="compact-item"><span class="compact-symbol">✦</span><div class="compact-copy"><strong>Provider</strong><p>${escapeHTML(config.ai_provider)} · ${escapeHTML(config.model)}</p><small>Temp: ${config.temperature} · Max tokens: ${config.max_tokens}</small></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">◒</span><div class="compact-copy"><strong>Grounding</strong><p>${escapeHTML(config.data_grounding)}</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">✓</span><div class="compact-copy"><strong>Audit logging</strong><p>${escapeHTML(config.audit_logging)}</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">📊</span><div class="compact-copy"><strong>Integration health</strong><p>Supabase: ${config.integration_health.supabase_configured ? 'OK' : 'Missing'} · AI: ${config.integration_health.ai_available ? 'OK' : 'Missing'} · ML: ${config.integration_health.ml_model_ready ? 'Ready' : 'Not ready'}</p></div></article>`;
+    $('#aiUsagePanel').innerHTML = `<article class="compact-item"><span class="compact-symbol">✦</span><div class="compact-copy"><strong>Total AI requests</strong><p>${usage.total_requests}</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">◉</span><div class="compact-copy"><strong>Local copilot</strong><p>${usage.sources.local} requests</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">◫</span><div class="compact-copy"><strong>Hosted AI</strong><p>${usage.sources.hosted} requests</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">◒</span><div class="compact-copy"><strong>Latest source</strong><p>${usage.latest.length ? usage.latest[0].source : 'None'}</p></div></article>`;
+    $('#systemStatusPanel').innerHTML = `<article class="compact-item"><span class="compact-symbol">✦</span><div class="compact-copy"><strong>Service</strong><p>${escapeHTML(status.service)}</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">◉</span><div class="compact-copy"><strong>AI integration</strong><p>Local: active · Hosted: ${escapeHTML(status.ai_integration.hosted_provider)}</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">◫</span><div class="compact-copy"><strong>ML predictor</strong><p>${escapeHTML(status.ml_integration.predictor)} · Data: ${escapeHTML(status.ml_integration.dataset_type)}</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">✓</span><div class="compact-copy"><strong>Environment configured</strong><p>${status.environment_variables_configured ? 'Yes' : 'No'}</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">📊</span><div class="compact-copy"><strong>Rate limit</strong><p>${escapeHTML(status.security.rate_limit)}</p></div></article>` +
+      `<article class="compact-item"><span class="compact-symbol">📊</span><div class="compact-copy"><strong>Security headers</strong><p>${escapeHTML(status.security.headers)}</p></div></article>`;
+  } catch (err) { console.error('Failed to load AI/dev data:', err); }
+}
 function populateSelectors(data) { const options = (records, label) => records.map(item => `<option value="${item.id}">${escapeHTML(item[label])}</option>`).join(''); $$('.project-select').forEach(select => { const chosen = select.value; select.innerHTML = '<option value="">Not assigned</option>' + options(data.projects, 'name'); select.value = chosen; }); $$('.customer-select').forEach(select => { const chosen = select.value; select.innerHTML = '<option value="">Not assigned</option>' + options(data.customers, 'company_name'); select.value = chosen; }); $$('.department-select').forEach(select => { const chosen = select.value; select.innerHTML = '<option value="">Not assigned</option>' + options(data.departments, 'name'); select.value = chosen; }); const portalEmployees = data.employees.filter(employee => employee.profile_id); $$('.employee-select').forEach(select => { const chosen = select.value; select.innerHTML = '<option value="">Unassigned</option>' + portalEmployees.map(employee => `<option value="${employee.profile_id}">${escapeHTML(employee.full_name)}</option>`).join(''); select.value = chosen; }); }
 function appendMessage(kind, text, source = '') { const node = $('#chatWindow'); node.insertAdjacentHTML('beforeend', `<div class="message ${kind}"><span class="message-icon">${kind === 'assistant' ? '✦' : 'U'}</span><div><p>${escapeHTML(text)}</p>${source ? `<span class="cell-muted">${escapeHTML(source)}</span>` : ''}</div></div>`); node.scrollTop = node.scrollHeight; }
 async function askAI(text) { const message = text.trim(); if (!message) return; appendMessage('user', message); $('#chatInput').value = ''; const button = $('#chatForm button'); button.disabled = true; button.textContent = '…'; try { const result = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ message }) }); appendMessage('assistant', result.answer, result.source); $('#aiSource').textContent = result.source === 'hosted AI' ? 'Hosted AI' : 'Local data'; } catch (error) { appendMessage('assistant', `I could not complete that request: ${error.message}`); } finally { button.disabled = false; button.textContent = '↑'; } }
 function renderRisk(result) { const node = $('#riskResult'); node.className = 'risk-result filled'; node.innerHTML = `<div class="risk-score"><strong>${result.risk_score}%</strong>${statusBadge(result.risk_level)}<small>${result.confidence}% model decisiveness</small></div><div class="risk-copy"><h3>Signals</h3><ul>${result.drivers.map(item => `<li>${escapeHTML(item)}</li>`).join('')}</ul></div><div class="risk-copy"><h3>Review actions</h3><ul>${result.recommendations.map(item => `<li>${escapeHTML(item)}</li>`).join('')}</ul></div><p class="model-note">${escapeHTML(result.model_note)}</p>`; }
-function showView(id) { $$('.view').forEach(node => node.classList.toggle('active', node.id === id)); $$('.nav-item[data-view]').forEach(node => node.classList.toggle('active', node.dataset.view === id)); $('#sidebar').classList.remove('open'); document.getElementById(id).scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+function showView(id) { $$('.view').forEach(node => node.classList.toggle('active', node.id === id)); $$('.nav-item[data-view]').forEach(node => node.classList.toggle('active', node.dataset.view === id)); $('#sidebar').classList.remove('open'); document.getElementById(id).scrollIntoView({ behavior: 'smooth', block: 'start' }); if (id === 'ai-dev') { loadAIDev(); } }
 function openDialog(id) { document.getElementById(id).showModal(); }
 function closeDialog(id) { document.getElementById(id).close(); }
 function cleanPayload(form) { const payload = Object.fromEntries(new FormData(form)); for (const [key, value] of Object.entries(payload)) { if (value === '') payload[key] = null; } return payload; }
