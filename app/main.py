@@ -35,6 +35,26 @@ if settings.cors_origin_list:
     )
 
 
+# Rate limiting (simple in-memory per IP for production hardening)
+from collections import defaultdict
+from time import time
+
+_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+
+@app.middleware("http")
+async def rate_limit(request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    now = time()
+    window = 60  # 1 minute
+    max_requests = 60  # 1 request per second average
+    # Clean old entries
+    _rate_limit_store[client_ip] = [t for t in _rate_limit_store[client_ip] if now - t < window]
+    if len(_rate_limit_store[client_ip]) >= max_requests:
+        return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded. Please slow down."})
+    _rate_limit_store[client_ip].append(now)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def security_headers(request, call_next):
     response = await call_next(request)
@@ -88,7 +108,7 @@ def me(identity: Annotated[dict, Depends(auth_identity)]) -> dict:
 
 @app.post("/api/onboarding")
 def onboarding(payload: OnboardingRequest, identity: Annotated[dict, Depends(auth_identity)], repo: Annotated[SupabaseRepository, Depends(repository)]) -> dict:
-    profile = repo.onboarding(identity["user"], payload.organization_name, payload.full_name)
+    profile = repo.onboarding(identity["user"], payload.organization_name, payload.full_name, payload.role)
     return {"profile": profile}
 
 
@@ -177,6 +197,63 @@ def ai_ask(payload: AIRequest, actor: Annotated[dict, Depends(current_actor)], r
     text, source, actions = answer(payload.message, workspace)
     repo.record_ai(actor, payload.message, text, source)
     return {"answer": text, "source": source, "suggested_actions": actions}
+
+
+@app.get("/api/search")
+def search(
+    actor: Annotated[dict, Depends(current_actor)],
+    repo: Annotated[SupabaseRepository, Depends(repository)],
+    query: str = "",
+) -> dict:
+    """Search workspace records by name, description, or title."""
+    workspace = repo.dashboard(actor)
+    q = (query or "").lower()
+    if not q:
+        return {"results": [], "query": query}
+    results = {"projects": [], "tasks": [], "complaints": [], "employees": [], "customers": [], "documents": []}
+    for p in workspace.get("projects", []):
+        if q in (p.get("name") or "").lower() or q in (p.get("project_type") or "").lower():
+            results["projects"].append(p)
+    for t in workspace.get("tasks", []):
+        if q in (t.get("title") or "").lower() or q in (t.get("description") or "").lower():
+            results["tasks"].append(t)
+    for c in workspace.get("complaints", []):
+        if q in (c.get("description") or "").lower() or q in (c.get("category") or "").lower():
+            results["complaints"].append(c)
+    for e in workspace.get("employees", []):
+        if q in (e.get("full_name") or "").lower() or q in (e.get("job_title") or "").lower():
+            results["employees"].append(e)
+    for cu in workspace.get("customers", []):
+        if q in (cu.get("company_name") or "").lower() or q in (cu.get("contact_name") or "").lower():
+            results["customers"].append(cu)
+    for d in workspace.get("documents", []):
+        if q in (d.get("name") or "").lower() or q in (d.get("document_type") or "").lower():
+            results["documents"].append(d)
+    return {"results": results, "query": query}
+
+
+@app.get("/api/export/dashboard")
+def export_dashboard(actor: Annotated[dict, Depends(current_actor)], repo: Annotated[SupabaseRepository, Depends(repository)]) -> dict:
+    """Export authorized workspace data for external reporting or backup."""
+    return repo.dashboard(actor)
+
+
+@app.patch("/api/me")
+def update_me(payload: dict, identity: Annotated[dict, Depends(auth_identity)], repo: Annotated[SupabaseRepository, Depends(repository)]) -> dict:
+    user = identity["user"]
+    profile = identity["profile"]
+    if not profile:
+        raise HTTPException(status_code=409, detail="Profile not set up. Complete onboarding first.")
+    updates = {}
+    if "full_name" in payload:
+        updates["full_name"] = payload["full_name"]
+    if updates:
+        repo.update("profiles", user["id"], profile["organization_id"], updates)
+        # Find employee record by profile_id and update
+        employee_record = repo.one("employees", {"profile_id": user["id"], "organization_id": profile["organization_id"]})
+        if employee_record:
+            repo.update("employees", employee_record["id"], profile["organization_id"], updates)
+    return {"updated": bool(updates), "profile": profile, "message": "Profile updated."}
 
 
 @app.exception_handler(HTTPException)
