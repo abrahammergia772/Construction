@@ -18,6 +18,8 @@ body.role-admin .nav-item.active { background:#2b5142; color:#fff; }
 body.role-manager .nav-item.active { background:#2d4f8e; color:#fff; }
 body.role-employee .nav-item.active { background:#4e3588; color:#fff; }
 body.role-customer .nav-item.active { background:#8a5e06; color:#fff; }
+.admin-only { display: none; }
+body.role-admin .admin-only { display: block; }
 body.role-admin .metric-icon.blue { background:var(--accent-light); color:var(--accent-dark); }
 body.role-manager .metric-icon.blue { background:var(--accent-light); color:var(--accent-dark); }
 body.role-employee .metric-icon.blue { background:var(--accent-light); color:var(--accent-dark); }
